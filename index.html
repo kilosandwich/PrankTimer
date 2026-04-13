@@ -169,6 +169,7 @@ let activeQueue = [];
 let duration = 0;
 let lastUpdateTime = 0;
 let elapsedVirtual = 0;
+let timeSpeed = 1;
 
 let BUFFER = 1; // seconds between messages for auto adjustment and paragraph
 function getBuffer() {
@@ -310,7 +311,7 @@ function startTimer() {
   exitFullscreenMode();
 
   duration = parseFloat(document.getElementById("duration").value);
-
+  timeSpeed = parseFloat(document.getElementById("speed").value);
   collectMessages();
 
   elapsedVirtual = 0;
@@ -331,13 +332,16 @@ function updateTimer() {
   const remaining = duration - elapsedVirtual;
 
   // SPEED CONTROL — read from activeQueue
-  let currentSpeed = 1;
+  let currentSpeed = timeSpeed;
 
   if (activeQueue.length > 0) {
     const chosen = activeQueue.reduce((best, cur) =>
       cur.start > best.start ? cur : best
     );
-    currentSpeed = chosen.speed || 1;
+    currentSpeed = chosen.speed || timeSpeed;
+    timeSpeed = currentSpeed;
+    console.log("the current timespeed is:");
+    console.log(timeSpeed)
   }
 
   // REMOVE from activeQueue when interval ends
@@ -374,12 +378,15 @@ function updateTimer() {
     // MOVE from messageQueue -> activeQueue when timer crosses start
   messageQueue = messageQueue.filter(m => {
     const prevRemaining = remaining + deltaReal * currentSpeed;
-    const crossedStart = prevRemaining >= m.start && remaining < m.start;
 
-    if (crossedStart && !timeSkip) {
+    const inRange = remaining <= m.start && remaining >= m.end;
+    const alreadyActive = activeQueue.includes(m);
+
+    if (inRange && !alreadyActive && !timeSkip) {
       activeQueue.push(m);
       return false;
     }
+
     return true;
   });
 }
