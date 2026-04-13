@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Timer with JSON Import/Export</title>
+
+    <style>
+    body {
+        font-family: Arial, sans-serif;
+        text-align: center;
+        margin-top: 40px;
+    }
+
+    #timer {
+        font-size: 48px;
+    }
+
+    #message {
+        font-size: 28px;
+        margin-top: 20px;
+        color: red;
+    }
+
+    .fullscreen {
+        margin: 0;
+        height: 100vh;
+        width: 100vw;
+
+        background: black;
+        color: white;
+
+        display: flex;
+        justify-content: center;
+        align-items: center;
+
+        /* 🔥 KEY FIX: ensure column layout */
+        flex-direction: column;
+    }
+
+    /* STABLE CONTAINER */
+    .fullscreen #display {
+        display: flex;
+        flex-direction: column;   /* 🔥 prevents side-by-side */
+        align-items: center;
+        justify-content: center;
+
+        text-align: center;
+    }
+
+    /* TIMER LOCKED */
+    .fullscreen #timer {
+        font-size: 120px;
+        line-height: 1;
+        margin: 0;
+    }
+
+    /* MESSAGE BELOW TIMER */
+    .fullscreen #message {
+        font-size: 40px;
+        margin-top: 20px;
+        min-height: 60px;
+        text-align: center;
+    }
+
+    .hidden {
+        display: none;
+    }
+
+    .message-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin: 6px;
+    }
+
+    .delete-btn {
+        width: 26px;
+        height: 26px;
+        border: none;
+        background: crimson;
+        color: white;
+        font-weight: bold;
+        cursor: pointer;
+        border-radius: 4px;
+    }
+
+    .delete-btn:hover {
+        background: darkred;
+    }
+
+    input {
+        width: 70px;
+    }
+
+    .msg-text {
+        width: 180px;
+    }
+
+    #fileInput {
+        display: none;
+    }
+    </style>
+</head>
+
+<body ondblclick="exitFullscreenMode()" onkeydown="if(event.key==='Escape') exitFullscreenMode()">
+
+  <!-- DISPLAY -->
+  <div id="timer">00:00</div>
+  <div id="message"></div>
+  <!-- CONTROLS -->
+  <div id="controls">
+    <button onclick="startTimer()">Start</button>
+    <hr>
+    <div>
+      <label>Start Time At (seconds): </label>
+      <input type="number" id="duration" value="20">
+    </div>
+
+    <div>
+      <label>Speed Multiplier: </label>
+      <input type="number" id="speed" value="1" step="0.1">
+    </div>
+
+    <hr>
+    <h3>Messages (show between times)</h3>
+    <!-- EXPORT / IMPORT -->
+    <button onclick="downloadJSON()">Download JSON</button>
+    <button onclick="document.getElementById('fileInput').click()">Upload JSON</button>
+    <br><br>
+    <input type="file" id="fileInput" accept=".json" onchange="loadJSON(event)">
+
+    <label>
+      Default Interval (seconds):
+      <input type="number" id="defaultInterval" value="5" min="1">
+      Default Buffer Between Messages:
+      <input id="bufferInput" type="number" step="0.1" value="1">
+    </label>
+
+ 
+    <br><br>
+
+    <hr>
+    <div id="messageList"></div>
+
+    <button onclick="addMessageRow()">Add Message</button>
+    <button onclick="openParagraphBox()">Add Paragraph</button>
+
+    <div id="paragraphBox" class="hidden">
+      <textarea id="paragraphInput" rows="8" cols="50" placeholder="Enter text..."></textarea>
+      <br>
+      <button onclick="confirmParagraph()">Confirm Add</button>
+      <button onclick="closeParagraphBox()">Close</button>
+    </div>
+
+    
+
+    
+  </div>
+
+
+
+<script>
+let timerInterval = null;
+let messages = [];
+let messageQueue = [];
+let activeQueue = [];
+
+let duration = 0;
+let lastUpdateTime = 0;
+let elapsedVirtual = 0;
+
+let BUFFER = 1; // seconds between messages for auto adjustment and paragraph
+function getBuffer() {
+  return parseFloat(document.getElementById("bufferInput").value) || 0;
+}
+
+function formatTime(seconds) {
+  let mins = Math.floor(seconds / 60);
+  let secs = Math.floor(seconds % 60);
+  return String(mins).padStart(2, '0') + ":" + String(secs).padStart(2, '0');
+}
+
+// ADD ROW
+function addMessageRow(start, end, text, msgSpeed, trigger) {
+  const container = document.getElementById("messageList");
+  const rows = container.querySelectorAll(".message-row");
+  const lastRow = rows[rows.length - 1];
+
+  const totalDuration = parseInt(document.getElementById("duration").value) || 0;
+
+  let defaultStart = start !== undefined
+    ? start
+    : lastRow
+      ? parseFloat(lastRow.querySelector(".msg-end").value)
+      : totalDuration;
+
+  const intervalSize = parseFloat(document.getElementById("defaultInterval").value) || 5;
+
+  let defaultEnd = end !== undefined
+    ? end
+    : Math.max(0, defaultStart - intervalSize);
+
+  if (!text) text = "";
+  if (msgSpeed === undefined) msgSpeed = parseFloat(document.getElementById("speed").value) || 1;
+  if (trigger === undefined) trigger = 0;
+
+  const row = document.createElement("div");
+  row.className = "message-row";
+
+  row.innerHTML = `
+    <button class="delete-btn" onclick="removeMessage(this)">×</button>
+    from <input type="number" class="msg-start" value="${defaultStart}">
+    to <input type="number" class="msg-end" value="${defaultEnd}">
+    speed <input type="number" step="0.1" class="msg-speed" value="${msgSpeed}">
+    Add/Subtract Time <input type="number" step="0.1" class="msg-trigger" value="${trigger}">
+    <input type="text" class="msg-text" value="${text}" placeholder="Message">
+    <button onclick="adjustAround(this)">↔</button>
+  `;
+
+  container.appendChild(row);
+
+  row.dataset.prevStart = defaultStart;
+  row.dataset.prevEnd = defaultEnd;
+}
+
+function removeMessage(btn) {
+  btn.parentElement.remove();
+}
+
+// COLLECT — builds messageQueue upfront from all rows
+function collectMessages() {
+  messages = [];
+  messageQueue = [];
+  activeQueue = [];
+
+  document.querySelectorAll(".message-row").forEach(row => {
+    const start = parseFloat(row.querySelector(".msg-start").value);
+    const end = parseFloat(row.querySelector(".msg-end").value);
+    const text = row.querySelector(".msg-text").value;
+    const msgSpeed = parseFloat(row.querySelector(".msg-speed").value) || 1;
+    const trigger = parseFloat(row.querySelector(".msg-trigger").value) || 0;
+
+    if (!isNaN(start) && !isNaN(end)) {
+      const msg = { start, end, text, speed: msgSpeed, trigger, triggered: false };
+      messages.push(msg);
+      messageQueue.push({ ...msg }); // pre-populate queue with a copy
+    }
+  });
+}
+
+// RENDER
+function renderMessagesFromJSON(data) {
+  document.getElementById("messageList").innerHTML = "";
+  data.forEach(m =>
+    addMessageRow(m.start, m.end, m.text, m.speed, m.trigger)
+  );
+}
+
+// DOWNLOAD
+function downloadJSON() {
+  collectMessages();
+
+  const project = {
+    duration: parseFloat(document.getElementById("duration").value),
+    messages: messages
+  };
+
+  const blob = new Blob(
+    [JSON.stringify(project, null, 2)],
+    { type: "application/json" }
+  );
+
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "timer-project.json";
+  a.click();
+}
+
+// LOAD
+function loadJSON(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+
+  reader.onload = function(e) {
+    try {
+      const project = JSON.parse(e.target.result);
+
+      if (!project || !Array.isArray(project.messages)) {
+        alert("Invalid JSON format");
+        return;
+      }
+
+      document.getElementById("duration").value = project.duration ?? 20;
+      renderMessagesFromJSON(project.messages);
+
+    } catch (err) {
+      console.error(err);
+      alert("Error reading JSON file");
+    }
+  };
+
+  reader.readAsText(file);
+}
+
+// TIMER START
+function startTimer() {
+  exitFullscreenMode();
+
+  duration = parseFloat(document.getElementById("duration").value);
+
+  collectMessages();
+
+  elapsedVirtual = 0;
+  lastUpdateTime = Date.now();
+
+  document.getElementById("controls").classList.add("hidden");
+  document.body.classList.add("fullscreen");
+
+  timerInterval = setInterval(updateTimer, 50);
+}
+
+// TIMER LOOP
+function updateTimer() {
+  const now = Date.now();
+  const deltaReal = (now - lastUpdateTime) / 1000;
+  let timeSkip = false;
+
+  const remaining = duration - elapsedVirtual;
+
+  // SPEED CONTROL — read from activeQueue
+  let currentSpeed = 1;
+
+  if (activeQueue.length > 0) {
+    const chosen = activeQueue.reduce((best, cur) =>
+      cur.start > best.start ? cur : best
+    );
+    currentSpeed = chosen.speed || 1;
+  }
+
+  // REMOVE from activeQueue when interval ends
+  activeQueue = activeQueue.filter(m => remaining >= m.end);
+
+  // TIME ADJUSTMENT TRIGGER (run once per message)
+  messages.forEach(m => {
+    const wasBeforeEnd = (remaining + deltaReal * currentSpeed) <= m.end;
+    const isAfterEnd = remaining <= m.end;
+
+    if (wasBeforeEnd && isAfterEnd && !m.triggered) {
+      elapsedVirtual -= (m.trigger || 0);
+      m.triggered = true;
+      timeSkip = true;
+    }
+  });
+
+
+
+
+
+  elapsedVirtual += deltaReal * currentSpeed;
+  lastUpdateTime = now;
+
+  const remainingClamped = Math.max(0, duration - elapsedVirtual);
+
+  updateDisplay(Math.ceil(remainingClamped));
+  updateMessages();
+
+  if (remainingClamped <= 0) {
+    exitFullscreenMode();
+  }
+
+    // MOVE from messageQueue -> activeQueue when timer crosses start
+  messageQueue = messageQueue.filter(m => {
+    const prevRemaining = remaining + deltaReal * currentSpeed;
+    const crossedStart = prevRemaining >= m.start && remaining < m.start;
+
+    if (crossedStart && !timeSkip) {
+      activeQueue.push(m);
+      return false;
+    }
+    return true;
+  });
+}
+
+// MESSAGE DISPLAY — read from activeQueue only
+function updateMessages() {
+  const msgBox = document.getElementById("message");
+
+  if (activeQueue.length === 0) {
+    msgBox.textContent = "";
+    return;
+  }
+
+  const chosen = activeQueue.reduce((best, cur) =>
+    cur.start > best.start ? cur : best
+  );
+
+  msgBox.textContent = chosen.text;
+}
+
+function exitFullscreenMode() {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+
+  messageQueue = [];
+  activeQueue = [];
+
+  document.body.classList.remove("fullscreen");
+  document.getElementById("controls").classList.remove("hidden");
+
+  document.getElementById("timer").textContent = "00:00";
+  document.getElementById("message").textContent = "";
+}
+
+function updateDisplay(time) {
+  document.getElementById("timer").textContent = formatTime(time);
+}
+
+// PARAGRAPH
+function openParagraphBox() {
+  document.getElementById("paragraphBox").classList.remove("hidden");
+}
+
+function closeParagraphBox() {
+  document.getElementById("paragraphBox").classList.add("hidden");
+}
+
+function confirmParagraph() {
+  const text = document.getElementById("paragraphInput").value;
+
+
+  //this is the text splitting bit
+  const lines = text.split(/\n|\. /).filter(l => l.trim() !== "");
+
+  const buffer = getBuffer();
+  const intervalSize =
+    parseFloat(document.getElementById("defaultInterval").value) || 5;
+
+  const totalDuration =
+    parseFloat(document.getElementById("duration").value) || 0;
+
+  let currentEnd = totalDuration;
+
+  lines.forEach(line => {
+    const clean = line.trim();
+    if (!clean) return;
+
+    addMessageRow(undefined, undefined, clean);
+
+    const rows = document.querySelectorAll(".message-row");
+    const row = rows[rows.length - 1];
+
+    const startInput = row.querySelector(".msg-start");
+    const endInput = row.querySelector(".msg-end");
+
+    // =========================
+    // BUILD FROM TOP (COUNTDOWN)
+    // =========================
+
+    const start = currentEnd;
+    const end = start - intervalSize;
+
+    startInput.value = start;
+    endInput.value = end;
+
+    // move downward with buffer
+    currentEnd = end - buffer;
+  });
+
+  document.getElementById("paragraphInput").value = "";
+  closeParagraphBox();
+}
+
+// ADJUST
+function adjustAround(btn) {
+  const rows = Array.from(document.querySelectorAll(".message-row"));
+  const index = rows.indexOf(btn.parentElement);
+  const row = rows[index];
+
+  const buffer = getBuffer();
+
+  const newStart = parseFloat(row.querySelector(".msg-start").value);
+  const newEnd = parseFloat(row.querySelector(".msg-end").value);
+
+  if (isNaN(newStart) || isNaN(newEnd)) return;
+
+  // =========================
+  // MOVE UP
+  // =========================
+  let currentStart = newStart;
+
+  for (let i = index - 1; i >= 0; i--) {
+    const r = rows[i];
+    const startInput = r.querySelector(".msg-start");
+    const endInput = r.querySelector(".msg-end");
+
+    let length =
+      parseFloat(startInput.value) - parseFloat(endInput.value);
+
+    let newEndAbove = currentStart + buffer;
+    let newStartAbove = newEndAbove + length;
+
+    startInput.value = newStartAbove;
+    endInput.value = newEndAbove;
+
+    currentStart = newStartAbove;
+  }
+
+  // =========================
+  // MOVE DOWN
+  // =========================
+  let currentEnd = newEnd;
+
+  for (let i = index + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const startInput = r.querySelector(".msg-start");
+    const endInput = r.querySelector(".msg-end");
+
+    let length =
+      parseFloat(startInput.value) - parseFloat(endInput.value);
+
+    let newStartBelow = currentEnd - buffer;
+    let newEndBelow = newStartBelow - length;
+
+    startInput.value = newStartBelow;
+    endInput.value = newEndBelow;
+
+    currentEnd = newEndBelow;
+  }
+}
+</script>
+
+</body>
+</html>
